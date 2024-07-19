@@ -159,6 +159,20 @@ raqm_set_freetype_load_flags_range (raqm_t *rq,
                                     size_t  len);
 
 RAQM_API bool
+raqm_set_hb_synthetic (raqm_t *rq,
+                       float slant,
+                       float x_embolden,
+                       float y_embolden);
+
+RAQM_API bool
+raqm_set_hb_synthetic_range (raqm_t *rq,
+                             float slant,
+                             float x_embolden,
+                             float y_embolden,
+                             size_t start,
+                             size_t len);
+
+RAQM_API bool
 raqm_set_letter_spacing_range(raqm_t *rq,
                               int    spacing,
                               size_t start,

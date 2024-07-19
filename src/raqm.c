@@ -174,6 +174,9 @@ typedef struct
   hb_language_t lang;
   hb_script_t   script;
   int           spacing_after;
+  float         slant;
+  float         x_embolden;
+  float         y_embolden;
 } _raqm_text_info;
 
 typedef struct _raqm_run raqm_run_t;
@@ -237,6 +240,9 @@ _raqm_init_text_info (raqm_t *rq)
     rq->text_info[i].lang = default_lang;
     rq->text_info[i].script = HB_SCRIPT_INVALID;
     rq->text_info[i].spacing_after = 0;
+    rq->text_info[i].slant = 0;
+    rq->text_info[i].x_embolden = 0;
+    rq->text_info[i].y_embolden = 0;
   }
 }
 
@@ -268,6 +274,18 @@ _raqm_compare_text_info (_raqm_text_info a,
 
   if (a.script != b.script)
     return false;
+
+  /* These are ignored with old harfbuzz versions */
+#if (HB_VERSION_MAJOR >= 7)
+  if (a.slant != b.slant)
+    return false;
+
+  if (a.x_embolden != b.x_embolden)
+    return false;
+
+  if (a.y_embolden != b.y_embolden)
+    return false;
+#endif
 
   /* Spacing shouldn't break runs, so we don't compare them here. */
 
@@ -881,12 +899,23 @@ raqm_add_font_feature (raqm_t     *rq,
 static hb_font_t *
 _raqm_create_hb_font (raqm_t *rq,
                       FT_Face face,
-                      int     loadflags)
+                      int     loadflags,
+                      float   slant,
+                      float   x_embolden,
+                      float   y_embolden)
 {
   hb_font_t *font = hb_ft_font_create_referenced (face);
 
   if (loadflags >= 0)
     hb_ft_font_set_load_flags (font, loadflags);
+
+#if (HB_VERSION_MAJOR >= 7)
+  if (slant != 0)
+    hb_font_set_synthetic_slant (font, slant);
+
+  if (x_embolden != 0 || y_embolden != 0)
+    hb_font_set_synthetic_bold(font, x_embolden, y_embolden, true);
+#endif
 
   return font;
 }
@@ -1077,6 +1106,110 @@ raqm_set_freetype_load_flags_range (raqm_t *rq,
   start = _raqm_encoding_to_u32_index (rq, start);
 
   return _raqm_set_freetype_load_flags (rq, flags, start, end);
+}
+
+static bool
+_raqm_set_hb_synthetic (raqm_t *rq,
+                        float slant,
+                        float x_embolden,
+                        float y_embolden,
+                        size_t start,
+                        size_t end)
+{
+  if (!rq)
+    return false;
+
+  if (!rq->text_len)
+    return true;
+
+  if (start >= rq->text_len || end > rq->text_len)
+    return false;
+
+  if (!rq->text_info)
+    return false;
+
+  for (size_t i = start; i < end; i++)
+  {
+    rq->text_info[i].x_embolden = x_embolden;
+    rq->text_info[i].y_embolden = y_embolden;
+    rq->text_info[i].slant = slant;
+  }
+
+  return true;
+}
+
+/**
+ * raqm_set_hb_synthetic:
+ * @rq: a #raqm_t.
+ * @flags: FreeType load flags.
+ *
+ * Sets the synthetic parameters passed to Harfbuzz when loading glyphs. 
+ * Parameters should be the same as used by the client when rendering corresponding FreeType glyphs.
+ *
+ * This requires version of HarfBuzz that has hb_font_set_synthetic_bold() and hb_font_set_synthetic_slant(), for
+ * older version the parameters will be ignored.
+ *
+ * Return value:
+ * `true` if no errors happened, `false` otherwise.
+ *
+ */
+RAQM_API bool
+raqm_set_hb_synthetic (raqm_t *rq,
+                       float slant,
+                       float x_embolden,
+                       float y_embolden)
+{
+    return _raqm_set_hb_synthetic(rq, slant, x_embolden, y_embolden, 0, rq->text_len);
+}
+
+/**
+ * raqm_set_hb_synthetic_range:
+ * @rq: a #raqm_t.
+ * @slant: The synthetic slant value.
+ * @x_embolden: The amount to embolden the font horizontally
+ * @y_embolden: The amount to embolden the font vertically
+ * @start: index of first character that should use the synthetic parameters.
+ * @len: number of characters using the synthetic parameters.
+ *
+ * Sets the synthetic parameters passed to Harfbuzz for @len-number
+ * of characters staring at @start. Parameters should be the same as used by the
+ * client when rendering corresponding FreeType glyphs. The @start and @len
+ * are input string array indices (i.e. counting bytes in UTF-8 and scaler
+ * values in UTF-32).
+ *
+ * This method can be used repeatedly to set different synthetic parameters for different
+ * parts of the text. It is the responsibility of the client to make sure that
+ * ranges cover the whole text.
+ *
+ * This requires version of HarfBuzz that has hb_font_set_synthetic_bold() and hb_font_set_synthetic_slant(), for
+ * older version the parameters will be ignored.
+ *
+ * See also raqm_set_hb_synthetic().
+ *
+ * Return value:
+ * `true` if no errors happened, `false` otherwise.
+ *
+ */
+RAQM_API bool
+raqm_set_hb_synthetic_range (raqm_t *rq,
+                             float slant,
+                             float x_embolden,
+                             float y_embolden,
+                             size_t start,
+                             size_t len)
+{
+  size_t end;
+
+  if(!rq)
+    return false;
+
+  if(!rq->text_len)
+    return true;
+  
+  end = _raqm_encoding_to_u32_index (rq, start + len);
+  start = _raqm_encoding_to_u32_index (rq, start);
+  
+  return _raqm_set_hb_synthetic(rq, slant, x_embolden, y_embolden, start, end);
 }
 
 static bool
@@ -1793,7 +1926,8 @@ _raqm_itemize (raqm_t *rq)
       run->pos = runs[i].pos + runs[i].len - 1;
       run->script = rq->text_info[run->pos].script;
       run->font = _raqm_create_hb_font (rq, rq->text_info[run->pos].ftface,
-          rq->text_info[run->pos].ftloadflags);
+          rq->text_info[run->pos].ftloadflags, rq->text_info[run->pos].slant,
+          rq->text_info[run->pos].x_embolden, rq->text_info[run->pos].y_embolden);
       for (int j = runs[i].len - 1; j >= 0; j--)
       {
         _raqm_text_info info = rq->text_info[runs[i].pos + j];
@@ -1810,7 +1944,7 @@ _raqm_itemize (raqm_t *rq)
           newrun->direction = _raqm_hb_dir (rq, runs[i].level);
           newrun->script = info.script;
           newrun->font = _raqm_create_hb_font (rq, info.ftface,
-              info.ftloadflags);
+              info.ftloadflags, info.slant, info.x_embolden, info.y_embolden);
           run->next = newrun;
           run = newrun;
         }
@@ -1826,7 +1960,8 @@ _raqm_itemize (raqm_t *rq)
       run->pos = runs[i].pos;
       run->script = rq->text_info[run->pos].script;
       run->font = _raqm_create_hb_font (rq, rq->text_info[run->pos].ftface,
-          rq->text_info[run->pos].ftloadflags);
+          rq->text_info[run->pos].ftloadflags, rq->text_info[run->pos].slant,
+          rq->text_info[run->pos].x_embolden, rq->text_info[run->pos].y_embolden);
       for (size_t j = 0; j < runs[i].len; j++)
       {
         _raqm_text_info info = rq->text_info[runs[i].pos + j];
@@ -1843,7 +1978,7 @@ _raqm_itemize (raqm_t *rq)
           newrun->direction = _raqm_hb_dir (rq, runs[i].level);
           newrun->script = info.script;
           newrun->font = _raqm_create_hb_font (rq, info.ftface,
-              info.ftloadflags);
+              info.ftloadflags, info.slant, info.x_embolden, info.y_embolden);
           run->next = newrun;
           run = newrun;
         }
